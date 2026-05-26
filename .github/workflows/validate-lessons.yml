@@ -1,0 +1,392 @@
+name: Validate Lessons
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'labs/**'
+      - 'tools/lab_validator/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'labs/**'
+      - 'tools/lab_validator/**'
+  workflow_dispatch:
+    inputs:
+      lab_path:
+        description: 'Specific lab path to validate (e.g., labs/phase-2/class-07/)'
+        required: false
+        default: ''
+      skip_runtime:
+        description: 'Skip runtime checks (app startup tests)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    name: Detect Changed Labs
+    runs-on: ubuntu-latest
+    outputs:
+      labs: ${{ steps.detect.outputs.labs }}
+      has_labs: ${{ steps.detect.outputs.has_labs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed lab directories
+        id: detect
+        run: |
+          if [[ -n "${{ github.event.inputs.lab_path }}" ]]; then
+            # Manual dispatch with specific path
+            echo "labs=${{ github.event.inputs.lab_path }}" >> "$GITHUB_OUTPUT"
+            echo "has_labs=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # For PRs, detect which lab directories changed
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          fi
+
+          # Find unique lab directories
+          LABS=""
+          for file in $CHANGED_FILES; do
+            if [[ "$file" == labs/phase-* ]]; then
+              # Extract lab directory (e.g., labs/phase-2/class-07)
+              LAB_DIR=$(echo "$file" | grep -oP 'labs/phase-\d+/class-\d+' | head -1)
+              if [[ -n "$LAB_DIR" && -d "$LAB_DIR" ]]; then
+                if [[ -z "$LABS" ]]; then
+                  LABS="$LAB_DIR"
+                else
+                  # Add only if not already present
+                  if [[ "$LABS" != *"$LAB_DIR"* ]]; then
+                    LABS="$LABS $LAB_DIR"
+                  fi
+                fi
+              fi
+            fi
+          done
+
+          if [[ -z "$LABS" ]]; then
+            echo "has_labs=false" >> "$GITHUB_OUTPUT"
+            echo "labs=" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_labs=true" >> "$GITHUB_OUTPUT"
+            echo "labs=$LABS" >> "$GITHUB_OUTPUT"
+            echo "Detected changed labs: $LABS"
+          fi
+
+  validate-structure:
+    name: Validate Lab Structure
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_labs == 'true'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        lab: ${{ fromJson(needs.detect-changes.outputs.labs) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest pytest-timeout requests
+          # Install lab-specific dependencies
+          if [[ -f ${{ matrix.lab }}/vulnerable/requirements.txt ]]; then
+            pip install -r ${{ matrix.lab }}/vulnerable/requirements.txt
+          fi
+          if [[ -f ${{ matrix.lab }}/patched/requirements.txt ]]; then
+            pip install -r ${{ matrix.lab }}/patched/requirements.txt
+          fi
+
+      - name: Validate lab structure
+        id: validate
+        run: |
+          SKIP_FLAG=""
+          if [[ "${{ github.event.inputs.skip_runtime }}" == "true" ]]; then
+            SKIP_FLAG="--no-run"
+          fi
+
+          python tools/lab_validator/validate_lab.py \
+            "${{ matrix.lab }}" \
+            --format json \
+            --output validation-result.json \
+            $SKIP_FLAG \
+            --verbose || true
+
+          # Extract result from JSON
+          if [[ -f validation-result.json ]]; then
+            OVERALL=$(python -c "import json; print(json.load(open('validation-result.json'))['overall_result'])")
+            echo "overall_result=$OVERALL" >> "$GITHUB_OUTPUT"
+          else
+            echo "overall_result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.lab }}
+          path: validation-result.json
+          retention-days: 30
+
+      - name: Check validation result
+        if: steps.validate.outputs.overall_result != 'pass'
+        run: |
+          echo "::error::Lab validation failed for ${{ matrix.lab }}"
+          python tools/lab_validator/validate_lab.py \
+            "${{ matrix.lab }}" \
+            --verbose \
+            $([[ "${{ github.event.inputs.skip_runtime }}" == "true" ]] && echo "--no-run") || true
+          exit 1
+
+  validate-safety-markers:
+    name: Check Safety Markers
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_labs == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for safety markers in attack files
+        run: |
+          EXIT_CODE=0
+          for LAB in ${{ needs.detect-changes.outputs.labs }}; do
+            echo "Checking safety markers in: $LAB"
+            ATTACK_DIR="$LAB/attacks"
+            if [[ ! -d "$ATTACK_DIR" ]]; then
+              echo "⚠️  No attacks/ directory in $LAB"
+              continue
+            fi
+
+            for ATTACK_FILE in "$ATTACK_DIR"/*.py "$ATTACK_DIR"/*.md; do
+              if [[ ! -f "$ATTACK_FILE" ]]; then
+                continue
+              fi
+
+              FILENAME=$(basename "$ATTACK_FILE")
+
+              # Check for SAFETY markers
+              if grep -qiE "(<!--\s*SAFETY:|#\s*SAFETY:)" "$ATTACK_FILE"; then
+                MARKER_COUNT=$(grep -ciE "(<!--\s*SAFETY:|#\s*SAFETY:)" "$ATTACK_FILE")
+                echo "✅ $FILENAME: $MARKER_COUNT safety marker(s) found"
+              else
+                echo "❌ $FILENAME: No safety markers found"
+                EXIT_CODE=1
+              fi
+
+              # Check for localhost validation in Python attack scripts
+              if [[ "$ATTACK_FILE" == *.py ]]; then
+                if grep -qiE "(localhost|127\.0\.0\.1|validate_target)" "$ATTACK_FILE"; then
+                  echo "✅ $FILENAME: Localhost validation found"
+                else
+                  echo "⚠️  $FILENAME: No localhost validation detected"
+                fi
+
+                # Check for network exfiltration patterns (should not exist)
+                if grep -qiE "(requests\.(post|put|patch).*http[s]?://(?!localhost|127\.0\.0\.1))" "$ATTACK_FILE"; then
+                  echo "❌ $FILENAME: Potential data exfiltration to external URL detected"
+                  EXIT_CODE=1
+                fi
+              fi
+            done
+          done
+
+          exit $EXIT_CODE
+
+  validate-required-files:
+    name: Check Required Files
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_labs == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required files exist
+        run: |
+          EXIT_CODE=0
+          REQUIRED_FILES=(
+            "README.md"
+            "vulnerable/app.py"
+            "vulnerable/requirements.txt"
+            "patched/app.py"
+            "patched/requirements.txt"
+            "attacks/attack.py"
+            "tests/test_vulnerable.py"
+            "tests/test_patched.py"
+          )
+
+          for LAB in ${{ needs.detect-changes.outputs.labs }}; do
+            echo "Checking required files in: $LAB"
+            for REQ_FILE in "${REQUIRED_FILES[@]}"; do
+              FULL_PATH="$LAB/$REQ_FILE"
+              if [[ -f "$FULL_PATH" ]]; then
+                echo "✅ $REQ_FILE"
+              else
+                echo "❌ $REQ_FILE — MISSING"
+                EXIT_CODE=1
+              fi
+            done
+
+            # Check for inline annotations
+            VULN_APP="$LAB/vulnerable/app.py"
+            PATCHED_APP="$LAB/patched/app.py"
+
+            if [[ -f "$VULN_APP" ]]; then
+              VULN_COUNT=$(grep -c "# VULNERABLE:" "$VULN_APP" 2>/dev/null || echo "0")
+              if [[ "$VULN_COUNT" -gt 0 ]]; then
+                echo "✅ vulnerable/app.py: $VULN_COUNT VULNERABLE annotation(s)"
+              else
+                echo "❌ vulnerable/app.py: No # VULNERABLE: annotations"
+                EXIT_CODE=1
+              fi
+            fi
+
+            if [[ -f "$PATCHED_APP" ]]; then
+              PATCH_COUNT=$(grep -c "# PATCH:" "$PATCHED_APP" 2>/dev/null || echo "0")
+              if [[ "$PATCH_COUNT" -gt 0 ]]; then
+                echo "✅ patched/app.py: $PATCH_COUNT PATCH annotation(s)"
+              else
+                echo "❌ patched/app.py: No # PATCH: annotations"
+                EXIT_CODE=1
+              fi
+            fi
+
+            # Check dependencies are pinned
+            for REQ_TXT in "$LAB/vulnerable/requirements.txt" "$LAB/patched/requirements.txt"; do
+              if [[ -f "$REQ_TXT" ]]; then
+                UNPINNED=$(grep -vE "^(#|$|.*==)" "$REQ_TXT" | wc -l)
+                if [[ "$UNPINNED" -gt 0 ]]; then
+                  echo "❌ $REQ_TXT: $UNPINNED unpinned dependency(ies)"
+                  grep -vnE "^(#|$|.*==)" "$REQ_TXT"
+                  EXIT_CODE=1
+                else
+                  echo "✅ $(basename $(dirname $REQ_TXT))/requirements.txt: All dependencies pinned"
+                fi
+              fi
+            done
+          done
+
+          exit $EXIT_CODE
+
+  validate-lesson-structure:
+    name: Check Lesson Structure
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_labs == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check lesson markdown has required sections
+        run: |
+          EXIT_CODE=0
+          REQUIRED_SECTIONS=(
+            "Overview"
+            "Prerequisites"
+            "The Control Loop"
+            "The Vulnerability"
+            "Anatomy of the Attack"
+            "The Defense"
+            "Key Takeaways"
+            "Glossary"
+            "Further Reading"
+          )
+
+          LAB_REQUIRED_README_SECTIONS=(
+            "Objective"
+            "Setup"
+            "Tasks"
+            "Cleanup"
+            "Safety Notice"
+          )
+
+          for LAB in ${{ needs.detect-changes.outputs.labs }}; do
+            # Check lesson.md if it exists
+            LESSON_FILE="$LAB/lesson.md"
+            if [[ -f "$LESSON_FILE" ]]; then
+              echo "Checking lesson sections in: $LESSON_FILE"
+              for SECTION in "${REQUIRED_SECTIONS[@]}"; do
+                if grep -qiE "##\s+.*$SECTION" "$LESSON_FILE"; then
+                  echo "✅ Section: $SECTION"
+                else
+                  echo "❌ Missing section: $SECTION"
+                  EXIT_CODE=1
+                fi
+              done
+
+              # Check for Mermaid diagram
+              if grep -q "```mermaid" "$LESSON_FILE"; then
+                echo "✅ Mermaid diagram found"
+              else
+                echo "❌ No Mermaid diagram found in lesson"
+                EXIT_CODE=1
+              fi
+            fi
+
+            # Check lab README.md sections
+            README_FILE="$LAB/README.md"
+            if [[ -f "$README_FILE" ]]; then
+              echo "Checking lab README sections in: $README_FILE"
+              for SECTION in "${LAB_REQUIRED_README_SECTIONS[@]}"; do
+                if grep -qiE "##\s+.*$SECTION" "$README_FILE"; then
+                  echo "✅ README section: $SECTION"
+                else
+                  echo "❌ README missing section: $SECTION"
+                  EXIT_CODE=1
+                fi
+              done
+            fi
+          done
+
+          exit $EXIT_CODE
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validate-structure, validate-safety-markers, validate-required-files, validate-lesson-structure]
+    if: always()
+
+    steps:
+      - name: Check all validation jobs
+        run: |
+          echo "## Validation Summary"
+          echo ""
+          echo "| Check | Status |"
+          echo "|-------|--------|"
+          echo "| Lab Structure | ${{ needs.validate-structure.result }} |"
+          echo "| Safety Markers | ${{ needs.validate-safety-markers.result }} |"
+          echo "| Required Files | ${{ needs.validate-required-files.result }} |"
+          echo "| Lesson Structure | ${{ needs.validate-lesson-structure.result }} |"
+          echo ""
+
+          if [[ "${{ needs.validate-structure.result }}" == "failure" || \
+                "${{ needs.validate-safety-markers.result }}" == "failure" || \
+                "${{ needs.validate-required-files.result }}" == "failure" || \
+                "${{ needs.validate-lesson-structure.result }}" == "failure" ]]; then
+            echo "❌ One or more validation checks failed."
+            exit 1
+          else
+            echo "✅ All validation checks passed."
+          fi

@@ -1,0 +1,175 @@
+# AI Bill of Materials (AI-BOM)
+
+# System Identification
+system_name: ""
+system_version: ""
+system_owner: ""
+deployment_environment: ""
+last_updated: ""
+
+# Models
+models:
+  - name: ""
+    provider: ""
+    version: ""
+    model_id: ""
+    deployment_endpoint: ""
+    input_modalities: []
+    output_modalities: []
+    training_data_cutoff: ""
+    license: ""
+    capabilities: []
+    limitations: []
+
+# Prompts / System Instructions
+prompts:
+  - name: "system_prompt"
+    version: ""
+    template: ""
+    hash: ""
+    last_modified: ""
+  - name: ""
+    version: ""
+    template: ""
+    hash: ""
+    last_modified: ""
+
+# Tools / Actuators
+tools:
+  - name: ""
+    description: ""
+    risk_level: ""  # low, medium, high, critical
+    parameters_schema: {}
+    approval_required: false
+    rate_limit: null
+    enabled: true
+
+# Data Sources
+data_sources:
+  - name: ""
+    type: ""  # database, api, file, stream
+    access_level: ""  # public, internal, confidential, restricted
+    description: ""
+    data_classification: ""
+    retention_policy: ""
+    owner: ""
+
+# Vector Stores / RAG
+vector_stores:
+  - name: ""
+    embedding_model: ""
+    document_count: 0
+    access_level: ""
+    update_frequency: ""
+    data_sources: []
+    chunking_strategy: ""
+
+# Security Controls
+controls:
+  - name: "context_firewall"
+    type: "input_filter"
+    enabled: true
+    configuration:
+      injection_threshold: 0.5
+      max_segments: 100
+    version: ""
+
+  - name: "policy_engine"
+    type: "reference_governor"
+    enabled: true
+    configuration:
+      policy_file: "policies.yaml"
+    version: ""
+
+  - name: "tool_gateway"
+    type: "actuator_filter"
+    enabled: true
+    configuration:
+      auto_approve_high: false
+    version: ""
+
+  - name: "output_validator"
+    type: "output_filter"
+    enabled: true
+    configuration:
+      block_secrets: true
+      block_pii: true
+    version: ""
+
+  - name: "permission_rag"
+    type: "feedforward_filter"
+    enabled: true
+    configuration:
+      default_access_level: "internal"
+    version: ""
+
+  - name: "memory_quarantine"
+    type: "state_filter"
+    enabled: true
+    configuration:
+      quarantine_ttl_hours: 72
+      promotion_threshold: 0.7
+    version: ""
+
+  - name: "security_gateway"
+    type: "unified_gateway"
+    enabled: true
+    configuration:
+      injection_threshold: 0.5
+    version: ""
+
+# Evaluations
+evals:
+  - name: "prompt_injection_suite"
+    type: "attack_simulation"
+    last_run: ""
+    pass_rate: null
+    test_count: 0
+    critical_failures: 0
+
+  - name: "rag_poisoning_suite"
+    type: "attack_simulation"
+    last_run: ""
+    pass_rate: null
+    test_count: 0
+    critical_failures: 0
+
+  - name: "tool_abuse_suite"
+    type: "attack_simulation"
+    last_run: ""
+    pass_rate: null
+    test_count: 0
+    critical_failures: 0
+
+  - name: "data_leakage_suite"
+    type: "attack_simulation"
+    last_run: ""
+    pass_rate: null
+    test_count: 0
+    critical_failures: 0
+
+# Compliance
+compliance:
+  frameworks:
+    - name: "ISO 27001"
+      status: ""
+      last_audit: ""
+    - name: "NIST AI RMF"
+      status: ""
+      last_audit: ""
+    - name: "OWASP LLM Top 10"
+      status: ""
+      last_audit: ""
+
+# Supply Chain
+supply_chain:
+  dependencies:
+    - name: ""
+      version: ""
+      license: ""
+      source: ""
+  infrastructure:
+    - name: ""
+      provider: ""
+      region: ""
+      compliance_certifications: []

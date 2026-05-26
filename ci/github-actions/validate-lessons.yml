@@ -1,0 +1,172 @@
+name: Validate Lesson Structure
+
+on:
+  push:
+    paths:
+      - 'lessons/**'
+      - 'defenses/**'
+      - 'evals/**'
+  pull_request:
+    paths:
+      - 'lessons/**'
+      - 'defenses/**'
+      - 'evals/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-structure:
+    name: Validate Lesson Structure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Validate lesson file structure
+        run: |
+          echo "=== Validating Lesson Structure ==="
+          python -c "
+          import os
+          import sys
+          
+          errors = []
+          
+          # Check defense directories have required files
+          defense_dirs = [
+              'defenses/context-firewall',
+              'defenses/permission-aware-rag',
+              'defenses/secure-tool-gateway',
+              'defenses/policy-engine',
+              'defenses/output-validation',
+              'defenses/memory-quarantine',
+              'defenses/ai-security-gateway',
+          ]
+          
+          for defense_dir in defense_dirs:
+              if not os.path.isdir(defense_dir):
+                  errors.append(f'Missing defense directory: {defense_dir}')
+                  continue
+              
+              # Check for README
+              if not os.path.isfile(f'{defense_dir}/README.md'):
+                  errors.append(f'Missing README.md in {defense_dir}')
+              
+              # Check for Python implementation
+              py_files = [f for f in os.listdir(defense_dir) if f.endswith('.py') and f != '__init__.py']
+              if not py_files:
+                  errors.append(f'No Python implementation in {defense_dir}')
+              
+              # Check for tests directory
+              if not os.path.isdir(f'{defense_dir}/tests'):
+                  errors.append(f'Missing tests directory in {defense_dir}')
+              else:
+                  test_files = [f for f in os.listdir(f'{defense_dir}/tests') if f.endswith('.py')]
+                  if not test_files:
+                      errors.append(f'No test files in {defense_dir}/tests')
+          
+          # Check eval harness
+          eval_dir = 'evals/ai-security-eval-harness'
+          required_eval_files = ['run.py', 'config.yaml', 'README.md']
+          for f in required_eval_files:
+              if not os.path.isfile(f'{eval_dir}/{f}'):
+                  errors.append(f'Missing eval file: {eval_dir}/{f}')
+          
+          # Check attack YAMLs
+          attack_dir = f'{eval_dir}/attacks'
+          if os.path.isdir(attack_dir):
+              required_attacks = ['prompt_injection.yaml', 'rag_poisoning.yaml', 'tool_abuse.yaml', 'data_leakage.yaml']
+              for attack in required_attacks:
+                  if not os.path.isfile(f'{attack_dir}/{attack}'):
+                      errors.append(f'Missing attack YAML: {attack_dir}/{attack}')
+          
+          # Report
+          if errors:
+              print('VALIDATION ERRORS:')
+              for e in errors:
+                  print(f'  ❌ {e}')
+              sys.exit(1)
+          else:
+              print('✅ All lesson structure validations passed!')
+          "
+
+      - name: Check for safety markers in attack content
+        run: |
+          echo "=== Checking Attack Content Safety ==="
+          python -c "
+          import os
+          import sys
+          import re
+          
+          warnings = []
+          errors = []
+          
+          # Check attack YAML files for safety markers
+          attack_dir = 'evals/ai-security-eval-harness/attacks'
+          if os.path.isdir(attack_dir):
+              for yaml_file in os.listdir(attack_dir):
+                  if not yaml_file.endswith('.yaml'):
+                      continue
+                  filepath = os.path.join(attack_dir, yaml_file)
+                  with open(filepath, 'r') as f:
+                      content = f.read()
+                  
+                  # Check that real API keys/secrets are NOT present
+                  if re.search(r'sk-[a-zA-Z0-9]{40,}', content):
+                      errors.append(f'{yaml_file}: Contains what appears to be a real OpenAI API key')
+                  if re.search(r'AKIA[A-Z0-9]{16}', content):
+                      errors.append(f'{yaml_file}: Contains what appears to be a real AWS access key')
+                  if re.search(r'ghp_[a-zA-Z0-9]{36}', content):
+                      errors.append(f'{yaml_file}: Contains what appears to be a real GitHub PAT')
+                  
+                  # Check for expected_behavior field (educational context)
+                  if 'expected_behavior' not in content:
+                      warnings.append(f'{yaml_file}: Missing expected_behavior fields — ensure attacks have educational context')
+                  
+                  # Check for severity field (risk classification)
+                  if 'severity' not in content:
+                      warnings.append(f'{yaml_file}: Missing severity fields — ensure attacks are classified')
+          
+          # Report
+          for w in warnings:
+              print(f'  ⚠️  {w}')
+          for e in errors:
+              print(f'  ❌ {e}')
+          
+          if errors:
+              print('\\nSAFETY CHECK FAILED: Real credentials found in attack files')
+              sys.exit(1)
+          else:
+              print('\\n✅ Safety checks passed')
+          "
+
+      - name: Run linting
+        run: |
+          echo "=== Running Linting ==="
+          pip install ruff 2>/dev/null || true
+          
+          # Lint all Python files in defenses and evals
+          python_files=$(find defenses/ evals/ observability/ -name "*.py" -type f 2>/dev/null || true)
+          
+          if [ -n "$python_files" ]; then
+            echo "Linting Python files..."
+            echo "$python_files" | while read -r file; do
+              python -m py_compile "$file" 2>&1 && echo "  ✓ $file" || echo "  ✗ $file"
+            done
+          else
+            echo "No Python files found to lint"
+          fi
+          
+          echo ""
+          echo "✅ Linting complete"

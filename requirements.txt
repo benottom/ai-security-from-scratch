@@ -1,0 +1,27 @@
+# Testing
+pytest>=8.0.0
+
+# Web framework and server
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# UI and demonstration
+streamlit>=1.33.0
+
+# Vector databases for RAG labs
+chromadb>=0.5.0
+qdrant-client>=1.9.0
+
+# Configuration and templating
+pyyaml>=6.0.1
+jinja2>=3.1.3
+
+# Code quality
+ruff>=0.4.0
+
+# Environment and utilities
+python-dotenv>=1.0.1
+httpx>=0.27.0
+
+# LLM integration (optional — install if running labs with live models)
+# openai>=1.30.0

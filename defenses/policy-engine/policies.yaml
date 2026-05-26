@@ -1,0 +1,123 @@
+# AI Security Policies
+
+policies:
+  - name: no_secret_disclosure
+    description: "Prevent disclosure of secrets, API keys, and sensitive credentials in outputs"
+    enabled: true
+    rules:
+      - name: detect_api_keys
+        description: "Detect common API key formats in content"
+        type: output_check
+        patterns:
+          - "sk-[a-zA-Z0-9]{20,}"           # OpenAI-style keys
+          - "AKIA[A-Z0-9]{16}"               # AWS access keys
+          - "ghp_[a-zA-Z0-9]{36}"            # GitHub PATs
+          - "xox[baprs]-[a-zA-Z0-9-]+"       # Slack tokens
+          - "AIza[a-zA-Z0-9_-]{35}"          # Google API keys
+        action: deny
+        severity: critical
+
+      - name: detect_private_keys
+        description: "Detect private key blocks in content"
+        type: output_check
+        patterns:
+          - "-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----"
+          - "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+        action: deny
+        severity: critical
+
+      - name: detect_connection_strings
+        description: "Detect database connection strings with credentials"
+        type: output_check
+        patterns:
+          - "mongodb(?:\\+srv)?://[^\\s:]+:[^\\s@]+@"
+          - "postgres(?:ql)?://[^\\s:]+:[^\\s@]+@"
+          - "mysql://[^\\s:]+:[^\\s@]+@"
+          - "redis://:[^\\s@]+@"
+        action: deny
+        severity: critical
+
+      - name: detect_generic_secrets
+        description: "Detect generic secret/password patterns"
+        type: output_check
+        patterns:
+          - "(?i)password\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+          - "(?i)secret[_-]?key\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+          - "(?i)api[_-]?key\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+          - "(?i)auth[_-]?token\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+        action: deny
+        severity: high
+
+  - name: tool_requires_approval
+    description: "Require human approval for high-risk tool operations"
+    enabled: true
+    rules:
+      - name: destructive_tools
+        description: "Destructive tools always require approval"
+        type: tool_call
+        denied_tools:
+          - delete_database
+          - drop_table
+          - rm_rf
+          - format_disk
+          - execute_shell
+          - admin_override
+        action: require_approval
+        severity: critical
+
+      - name: network_tools
+        description: "Network-accessing tools require approval"
+        type: tool_call
+        denied_tools:
+          - send_email
+          - http_request
+          - upload_file
+          - ssh_connect
+        action: require_approval
+        severity: high
+
+      - name: injection_tool_patterns
+        description: "Block tools with names suggesting injection or abuse"
+        type: tool_call
+        patterns:
+          - "(?i)inject"
+          - "(?i)exploit"
+          - "(?i)bypass"
+          - "(?i)override"
+          - "(?i)escalate"
+        action: deny
+        severity: critical
+
+  - name: permission_aware_retrieval
+    description: "Enforce role-based access control on data retrieval"
+    enabled: true
+    rules:
+      - name: restricted_data_requires_admin
+        description: "Restricted data requires admin role"
+        type: data_access
+        required_roles:
+          - admin
+        action: deny
+        severity: high
+
+      - name: injection_in_retrieved_content
+        description: "Block retrieved content containing injection attempts"
+        type: content_filter
+        patterns:
+          - "(?i)ignore\\s+(previous|above|all)\\s+(instructions|prompts|rules)"
+          - "(?i)you\\s+are\\s+now\\s+"
+          - "(?i)new\\s+instructions?\\s*:"
+          - "(?i)disregard\\s+(your|the)\\s+(instructions|guidelines|rules)"
+          - "(?i)system\\s*:\\s*"
+        action: deny
+        severity: high
+
+      - name: pii_detection
+        description: "Detect potential PII in content"
+        type: content_filter
+        patterns:
+          - "\\b\\d{3}[-.]?\\d{2}[-.]?\\d{4}\\b"           # SSN-like
+          - "\\b\\d{16}\\b"                                    # Credit card (basic)
+          - "\\b[A-Z]{2}\\d{6}\\b"                            # Passport number (some formats)
+        action: require_approval
+        severity: high
